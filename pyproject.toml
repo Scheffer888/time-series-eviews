@@ -20,13 +20,15 @@ classifiers = [
 ]
 
 dependencies = [
-  "pandas>=1.0.0",
-  "numpy>=1.20.0",
-  "statsmodels>=0.13.0",
-  "arch>=5.0",
-  "matplotlib>=3.0",
-  "scipy>=1.5.0",
-  "click",
+  "pandas",
+  "numpy",
+  "statsmodels",
+  "arch",
+  "matplotlib",
+  "scipy",
+  "seaborn",
+  "holidays",
+  "arch",
 ]
 
 [project.scripts]
@@ -61,8 +63,8 @@ omit = [
 ]
 
 [tool.coverage.paths]
-timeseries_eviews = ["src/timeseries_eviews", "*/timeseries-eviews/src/timeseries_eviews"]
-tests = ["tests", "*/timeseries_eviews/tests"]
+timeseries_eviews = ["src/timeseries_eviews", "*/time-series-eviews/src/timeseries_eviews"]
+tests = ["tests", "*/time-series-eviews/tests"]
 
 [build-system]
 requires = ["hatchling"]
@@ -96,6 +98,8 @@ dependencies = [
   "arch",
   "scipy",
   "importlib_resources>=5.0.0",
+  "holidays",
+  "wrds"
 ]
 
 [tool.hatch.envs.test.scripts]
