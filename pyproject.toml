@@ -28,8 +28,11 @@ dependencies = [
   "scipy",
   "seaborn",
   "holidays",
-  "arch",
+  "click",
+  "plotly",
+  "polars",
 ]
+
 
 [project.scripts]
 timeseries-eviews = "timeseries_eviews.cli:main"
@@ -46,13 +49,22 @@ path = "src/timeseries_eviews/__about__.py"
 dependencies = [
   "mypy>=1.0.0",
   "pandas-stubs",
+  "numpy-stubs",
   "types-setuptools",
   "types-matplotlib",
   "types-scipy",
+  "types-click",
+  "types-requests",
+  "types-python-dateutil",
+  "types-tzdata",
+  "types-plotly",
+  "types-polars"
+  
 ]
 
 [tool.hatch.envs.types.scripts]
 check = "mypy --install-types --non-interactive {args:src/ tests/}"
+
 
 [tool.coverage.run]
 source_pkgs = ["timeseries_eviews", "tests"]
@@ -99,8 +111,10 @@ dependencies = [
   "scipy",
   "importlib_resources>=5.0.0",
   "holidays",
+  "polars",
   "wrds"
 ]
 
 [tool.hatch.envs.test.scripts]
 test = "pytest {args:tests}"
+
