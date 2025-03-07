@@ -19,18 +19,23 @@ Notes
 
 """
 
-import pandas as pd
-import numpy as np
-import plotly.express as px
+import os
+import math
 import logging
-
-# Additional libraries from Jeremy's snippet
-import polars as pl
 import datetime
 from dateutil.relativedelta import relativedelta
-# Matplotlib is used in certain advanced or legacy plots:
+import logging
+from typing import Tuple
+
+import numpy as np
+import pandas as pd
+import polars as pl
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
+import seaborn as sns
+
+from scipy.stats import norm
+from statsmodels.tsa.stattools import acf, pacf
+from statsmodels.stats.diagnostic import acorr_ljungbox
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
 
@@ -109,50 +114,289 @@ def plot_time_series(
     df: pd.DataFrame,
     title: str = "Time Series Plot",
     ytitle: str = "",
-    template: str = "plotly_white"
+    output_dir: str = None,
+    filename: str = "time_series_plot.png",
+    figsize: Tuple[int, int] = (8, 4),
 ):
     """
-    Plot multiple columns of a time series DataFrame using Plotly Express.
+    Plot multiple columns of a time series DataFrame using Matplotlib.
 
     Parameters
     ----------
     df : pd.DataFrame
-        A DataFrame with a DateTimeIndex and one or more columns to plot.
+        A DataFrame with a DateTimeIndex or numeric index and one or more columns to plot.
     title : str, optional
         Plot title.
     ytitle : str, optional
         Y-axis label.
-    template : str, optional
-        Plotly template for styling.
+    output_dir : str, optional
+        If not None, saves the plot to this directory as a PNG file.
+    filename : str, optional
+        The filename for saving the plot. Default='time_series_plot.png'.
+    figsize : Tuple[int, int], optional
+        Figure size in inches (width, height). Default=(8, 4).
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    for col in df.columns:
+        ax.plot(df.index, df[col], label=str(col))
+
+    ax.set_title(title, fontsize=11)
+    ax.set_xlabel("Index")
+    ax.set_ylabel(ytitle)
+    ax.legend(loc='best')
+    plt.tight_layout()
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        path_out = os.path.join(output_dir, filename)
+        plt.savefig(path_out, dpi=150, bbox_inches="tight")
+
+    return ax
+
+#------------------------------------------------------------------------------
+# Correlogram Utilities
+#------------------------------------------------------------------------------
+
+
+def compute_correlogram(series: pd.Series, max_lag: int = 40) -> pd.DataFrame:
+    """
+    Compute ACF, PACF, and Ljung-Box Q-test up to a specified lag, returning
+    a DataFrame with columns ['Lag', 'AC', 'PAC', 'Q-Stat', 'Prob'].
+
+    Parameters
+    ----------
+    series : pd.Series
+        Univariate time series.
+    max_lag : int, optional
+        Maximum lag to compute. Default=40.
 
     Returns
     -------
-    plotly.graph_objects.Figure
-        The Plotly figure object.
+    pd.DataFrame
+        A DataFrame with 'Lag', 'AC', 'PAC', 'Q-Stat', 'Prob'.
     """
-    plot_df = df.copy()
-    plot_df['time_index'] = plot_df.index
-    melted = plot_df.melt(id_vars='time_index', var_name='Series', value_name='Value')
+    # 1) ACF & PACF (skip lag=0)
+    ac_values = acf(series, nlags=max_lag, fft=False)
+    pac_values = pacf(series, nlags=max_lag, method='ols')
 
-    fig = px.line(
-        melted,
-        x="time_index",
-        y="Value",
-        color="Series",
-        title=title,
-        template=template
-    )
-    fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title=ytitle,
-        legend_title_text="Series"
-    )
-    fig.show()
-    return fig
+    # 2) Ljung-Box Q test for lags=1..max_lag
+    lb_results = acorr_ljungbox(series, lags=list(range(1, max_lag+1)), return_df=True)
 
+    # 3) Build DataFrame
+    corr_df = pd.DataFrame({
+        "Lag": range(1, max_lag+1),
+        "AC": ac_values[1:max_lag+1],
+        "PAC": pac_values[1:max_lag+1],
+        "Q-Stat": lb_results["lb_stat"].values,
+        "Prob": lb_results["lb_pvalue"].values
+    })
+
+    return corr_df
+
+
+def plot_correlogram(
+    series: pd.Series,
+    max_lag: int = 40,
+    title: str = "Correlogram",
+    alpha: float = 0.05,
+    output_dir: str = None,
+    filename: str = "correlogram.png",
+    show_plot: bool = True
+) -> pd.DataFrame:
+    """
+    Create a Matplotlib figure closely replicating EViews-style correlogram:
+      1) Autocorrelation bars (horizontal) on the left
+      2) Partial Correlation bars (horizontal) in the middle
+      3) A numeric table on the right: [Lag, AC, PAC, Q-Stat, Prob]
+         displayed from Lag=1 at the top row to Lag=max_lag at the bottom.
+
+    Lags are displayed top-to-bottom, matching EViews.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Time series to analyze.
+    max_lag : int, optional
+        Max lag for ACF/PACF. Default=40.
+    title : str, optional
+        Figure title, displayed at the top.
+    alpha : float, optional
+        Significance level for confidence intervals. If alpha=0.05 => ±1.96/sqrt(n).
+    output_dir : str, optional
+        If provided, directory to save the figure as PNG.
+    filename : str, optional
+        Name of the file saved, default 'correlogram.png'.
+    show_plot : bool, optional
+        If True, show the plot via plt.show().
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns [Lag, AC, PAC, Q-Stat, Prob].
+    """
+    corr_df = compute_correlogram(series, max_lag=max_lag)
+    n = len(series.dropna())
+    if n < 2:
+        raise ValueError("Not enough non-NaN data to compute correlations.")
+
+    # Confidence bounds
+    z_val = norm.ppf(1 - alpha / 2)
+    bound = z_val * (1 / math.sqrt(n))
+
+    # Figure size
+    fig_height = max(5, min(16, max_lag * 0.35))
+    fig = plt.figure(figsize=(10, fig_height))
+
+    # Use GridSpec: 3 columns -> AC, PAC, Table
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(nrows=1, ncols=3, width_ratios=[1.0, 1.0, 1.7], wspace=0.3)
+
+    # ----------------------------------------------------------------------------
+    # Subplot 1: ACF
+    # ----------------------------------------------------------------------------
+    ax_ac = fig.add_subplot(gs[0, 0])
+    ax_ac.barh(
+        y=corr_df.index, 
+        width=corr_df["AC"], 
+        color="#c6d9f0", 
+        edgecolor="black"
+    )
+    # Grey dashed lines for conf intervals
+    ax_ac.axvline(bound, color="grey", linestyle="--", lw=1.2)
+    ax_ac.axvline(-bound, color="grey", linestyle="--", lw=1.2)
+    ax_ac.axvline(0, color="lightgrey", linestyle="-", lw=0.7)
+
+    ax_ac.invert_yaxis()  # so 0 is top row => lag=1
+    ax_ac.set_xlim([-1.0, 1.0])
+    ax_ac.set_xlabel("Autocorr.")
+    ax_ac.set_title("Autocorrelation", fontsize=10, pad=17)
+    xlim = ax_ac.get_xlim()
+    line_length = int((xlim[1] - xlim[0]) * 10 + 5)
+    ax_ac.text(0, -1.5, "=" * line_length, ha='center', va='center', fontsize=9, fontfamily='monospace')
+    ax_ac.set_yticks(corr_df.index)
+    ax_ac.set_yticklabels(corr_df["Lag"].astype(str))
+    ax_ac.tick_params(axis='both', labelsize=9)
+    ax_ac.spines["top"].set_visible(False)
+    ax_ac.spines["right"].set_visible(False)
+
+    # ----------------------------------------------------------------------------
+    # Subplot 2: PAC
+    # ----------------------------------------------------------------------------
+    # We'll mirror the y-axis on the right side
+    ax_pac = fig.add_subplot(gs[0, 1], sharey=ax_ac)
+    ax_pac.barh(
+        y=corr_df.index, 
+        width=corr_df["PAC"], 
+        color="#c6d9f0", 
+        edgecolor="black"
+    )
+    ax_pac.axvline(bound, color="grey", linestyle="--", lw=1.2)
+    ax_pac.axvline(-bound, color="grey", linestyle="--", lw=1.2)
+    ax_pac.axvline(0, color="lightgrey", linestyle="-", lw=0.5)
+
+    ax_pac.invert_yaxis() 
+    ax_pac.set_xlim([-1.0, 1.0])
+    ax_pac.yaxis.set_label_position("right")
+    ax_pac.yaxis.tick_right()
+    ax_pac.tick_params(axis='both', labelsize=9)
+    ax_pac.set_xlabel("Partial Corr.")
+    ax_pac.set_title("Partial Correlation", fontsize=10, pad=17)
+    xlim = ax_ac.get_xlim()
+    line_length = int((xlim[1] - xlim[0]) * 10 + 5)
+    ax_pac.text(0, -1.5, "=" * line_length, ha='center', va='center', fontsize=9, fontfamily='monospace')
+    ax_pac.spines["top"].set_visible(False)
+    ax_pac.spines["left"].set_visible(False)
+
+    # ----------------------------------------------------------------------------
+    # Subplot 3: Table (align y with ax_ac so rows match the bars)
+    # ----------------------------------------------------------------------------
+    ax_tbl = fig.add_subplot(gs[0, 2], sharey=ax_ac)
+    ax_tbl.set_xlim([0, 1])
+    # Hide spines & ticks
+    ax_tbl.xaxis.set_visible(False)
+    ax_tbl.yaxis.set_visible(False)
+    for spine in ax_tbl.spines.values():
+        spine.set_visible(False)
+
+    # We'll place text at each y=i for reversed DF, 
+    # but we want the table in ascending order of Lag so that row at top is lag=1
+    # Actually, rev_df[0] is lag= max_lag, so we need to map back to corr_df row
+    # Let's store a map from i -> the row in corr_df
+    # index i in rev_df => corr_df index = len(corr_df)-i-1
+    # But we want lines from top=lag=1 => i=0 in rev => actually lag= max_lag
+    # We'll just reuse rev_df to keep the top row as lag=1 in the bar chart, 
+    # so the table's top row is also lag=1. That means we should iterate over rev_df from i=0.. 
+    # Yes, we do that, but each row's "Lag" is rev_df.Lag[i]. 
+    # This ensures row i lines up with bar i.
+    # We'll put a header at y=-1 so it's above the top bar.
+
+    # For spacing, let's see how tall each bar is. We'll do center alignment at i.
+    # We'll define a "monospace" string. EViews has columns: Lag, AC, PAC, Q-Stat, Prob
+    # We'll place the header just above the top bar at y=-1
+    ax_tbl.set_ylim([-1, len(corr_df) - 0.5])  # so there's room for the header
+    ax_tbl.invert_yaxis()  # keep the same orientation as bars
+
+    header_str = "  Lag    AC     PAC    Q-Stat    Prob"
+    ax_tbl.text(0, -1.8, header_str, fontname="monospace", fontsize=10)
+    ax_tbl.text(0, -1.3, "=" * (len(header_str)+5), fontname="monospace", fontsize=9)
+
+    for i in corr_df.index:
+        # rev_df[i] => row with reversed. 
+        # i=0 => top bar => lag=1
+        row = corr_df.loc[i]
+        lag = int(row["Lag"])
+        ac_ = f"{row['AC']:.3f}"
+        pac_ = f"{row['PAC']:.3f}"
+        qst_ = f"{row['Q-Stat']:.2f}"
+        prb_ = f"{row['Prob']:.3f}"
+        table_str = f"{lag:4d}  {ac_:>6}  {pac_:>6}  {qst_:>7}  {prb_:>6}"
+        ax_tbl.text(0, i, table_str, fontname="monospace", fontsize=10, va="center")
+
+    # ----------------------------------------------------------------------------
+    # Title with "====" line
+    # ----------------------------------------------------------------------------
+    fig.suptitle(f"{title} ({series.name})", fontsize=11)
+
+    # Save
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        outfile = os.path.join(output_dir, filename)
+        plt.savefig(outfile, dpi=150, bbox_inches="tight")
+
+    if show_plot:
+        plt.show()
+
+    return corr_df
+
+
+def plot_correlation(data: pd.DataFrame, output_dir=None, filename="corr_heatmap.png", show_plot=True):
+    """
+    Plot a correlation matrix heatmap (Seaborn) for the columns of 'self.data'.
+    """
+    corr_mat = data.corr()  # or self.fitted_model.resid.corr() if you want residuals
+    fig, ax = plt.subplots(figsize=(6, 5))
+    sns.heatmap(corr_mat, annot=True, cmap="coolwarm", ax=ax, fmt=".3f")
+
+    col_names = ", ".join(data.columns)
+    ax.set_title(f"Correlation Matrix - {col_names}", fontsize=11)
+    plt.tight_layout()
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        path_out = os.path.join(output_dir, filename)
+        plt.savefig(path_out, dpi=150, bbox_inches="tight")
+
+    if show_plot:
+        plt.show()
+
+    return corr_mat
 
 #------------------------------------------------------------------------------
-# Jeremy Bejarano's Extended Utilities (Weighted Stats, etc.)
+# Additional helper functions from Jeremy Bejarano:
+#   - df_to_literal, merge_stats, dataframe_set_difference
+#   - freq_counts, move_column_inplace, ...
+#   - Weighted stats, quantiles, lagged columns, ...
+#   - date manipulations (quarter ends, etc.)
 #------------------------------------------------------------------------------
 
 def df_to_literal(df, missing_value="None"):
