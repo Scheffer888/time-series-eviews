@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 
-
+from .unit_root import adf_test, simulate_df_distribution
+from .utils import plot_correlation
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.arima_process import arma_impulse_response
 from arch import arch_model
@@ -339,9 +340,17 @@ class TsModel:
             show_plot=show_plot
         )
         return corr_df
+
+
+    def check_stationarity(self):
+        result = adf_test(self.data)
+        print(f"ADF Statistic: {result['ADF Stat']:.4f}")
+        print(f"P-value: {result['p-value']:.4f}")
+        print(f"Lags Used: {result['Lags Used']}")
+        print("Critical Values:", result['Critical Values'])
     
 
-    def get_covariance_matrix(self):
+    def get_covariance_matrix(self, show_plot=True):
         """
         Return covariance matrices for ARMA and (if fitted) GARCH parameters.
 
@@ -357,6 +366,8 @@ class TsModel:
             # arch_model doesn't always store a direct covariance matrix but we can approximate:
             garch_cov = self.garch_result.variance_params
             cov_matrices["GARCH_cov"] = garch_cov
+        if show_plot:
+            plot_correlation(cov_matrices)
         return cov_matrices
 
 
@@ -458,7 +469,7 @@ if __name__ == "__main__":
     from pathlib import Path
     from utils import compute_correlogram, plot_correlogram
     
-    from statsmodels.tsa.stattools import adfuller
+    from .unit_root import adf_test, simulate_df_distribution
 
     # 1) Load data (example code, adjust path as needed)
     
@@ -476,19 +487,16 @@ if __name__ == "__main__":
     corr_table = compute_correlogram(returns, max_lag=20)
     print(corr_table.head(10))
 
-    print("\n---- Augmented Dickey-Fuller Test ----")
-    adf_result = adfuller(returns.dropna(), autolag='AIC')
-    print(f"ADF Statistic: {adf_result[0]:.4f}, p-value: {adf_result[1]:.4f}")
-    print("Critical Values:")
-    for k, v in adf_result[4].items():
-        print(f"  {k}: {v:.4f}")
-
     # 3) Fit ARMA(1,1) GARCH(1,1)
     print("\n---- Fitting ARMA(1,1) + GARCH(1,1) ----")
     model = TsModel(data=returns, arma_order=(1,0,1), garch_order=(1,1), model_name="SPY500_ARMA_GARCH")
     model.fit()
 
-    # 4) Check residuals correlogram, squared residuals correlogram
+    # 4) Check stationarity:
+    print("\n---- ADF Test for Returns ----")
+    model.check_stationarity()
+
+    # 5) Check residuals correlogram, squared residuals correlogram
     print("\n---- Residuals Correlogram ----")
     resid_corr = model.correlogram(lags=20, squared=False, show_plot=True)
     print(resid_corr.head(10))
@@ -497,11 +505,11 @@ if __name__ == "__main__":
     sq_resid_corr = model.correlogram(lags=20, squared=True, show_plot=True)
     print(sq_resid_corr.head(10))
 
-    # 5) Display model output
+    # 6) Display model output
     print("\n---- Model Estimation Results ----")
     model.display_estimation()
 
-    # 6) Static & Dynamic Forecasts
+    # 7) Static & Dynamic Forecasts
     print("\n---- Static Forecast (One-Step Ahead) ----")
     forecast_static = model.forecast(steps=10, method='static', alpha=0.05, plot='forecast_and_actuals')
     print("Forecast Values:\n", forecast_static["mean"])
